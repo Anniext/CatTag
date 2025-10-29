@@ -1,0 +1,131 @@
+run:
+    concurrency: 8
+    # 分析整个模块（含 internal/ pkg/ cmd/）
+    modules-download-mode: readonly
+    # 只分析当前提交变更的文件，CI 提速用（本地可注释）
+    # issues-from-diff: true
+    timeout: 5m
+    skip-dirs:
+        - third_party
+        - vendor
+        - proto
+        - mock
+    skip-files:
+        - ".*\\.pb\\.go$"
+        # - ".*_test\\.go$" # 测试文件如需检查可删除这行
+
+output:
+    format: colored-line-number
+    print-issued-lines: true
+    print-linter-name: true
+
+# 问题严重程度划分
+severity:
+    default-severity: error
+    rules:
+        - linters: [gosec]
+          severity: high
+
+linters-settings:
+    errcheck:
+        # 报告未处理错误
+        check-type-assertions: true
+        check-blank: true
+    gosimple:
+        checks: ["all"]
+    govet:
+        enable-all: true
+    ineffassign:
+        # 分配了从未使用的变量
+    staticcheck:
+        # SA 级别最高
+        checks: ["all", "-SA1019"]
+    gocritic:
+        # 风格/性能/语法建议
+        enabled-tags:
+            - diagnostic
+            - style
+            - performance
+        disabled-checks:
+            - commentedOutCode # 偶尔需要注释大段代码
+            - sloppyReassign # 允许重复赋值
+    gosec:
+        excludes:
+            - G104 # 未处理 error（已由 errcheck 覆盖）
+    funlen:
+        # 函数长度限制
+        lines: 80
+        statements: 50
+    cyclop:
+        # 圈复杂度
+        max-complexity: 15
+    revive:
+        # 替代 golint
+        severity: warning
+    misspell:
+        locale: US
+    lll:
+        # 长行
+        line-length: 120
+    nakedret:
+        # 裸 return
+        max-func-lines: 15
+
+linters:
+    # 先启用"快速+高价值"集合；后续可逐步打开更多
+    enable:
+        - errcheck # 未处理 error
+        - gosimple # 简化代码
+        - govet # go vet
+        - ineffassign # 无效赋值
+        - staticcheck # 静态分析
+        - typecheck # 类型检查
+        - unused # 未使用标识符
+        - gocritic # 风格/性能
+        - gosec # 安全
+        - misspell # 拼写
+        - revive # 替代 golint
+        - funlen # 函数长度
+        - cyclop # 圈复杂度
+        - lll # 长行
+        - nakedret # 裸 return
+        - gocognit # 认知复杂度
+        - prealloc # 预分配 slice
+        - nolintlint # 检查 nolint 注释是否有效
+
+    disable:
+        - golint # 已废弃，用 revive 替代
+        - scopelint # 已归档
+        - interfacer # 维护者归档
+        - maligned # 已合并到 govet
+        - exhaustivestruct # 过度严格，按需打开
+
+    # 快速模式（CI 首次跑）可只加载上面列表；
+    # 本地想全开可用 presets:
+    # presets:
+    #   - bugs
+    #   - performance
+    #   - style
+    #   - format
+
+issues:
+    # 同一行最多报 3 个不同 linter 错误，避免刷屏
+    max-same-issues: 3
+    # 未被 nolint 注释抑制的才展示
+    exclude-use-default: false
+    exclude-rules:
+        # 示例：测试文件允许使用 dot-import
+        - path: _test\.go
+          linters:
+              - gocritic
+          text: "dot-import"
+
+        # 示例：main 函数里经常直接 os.Exit，可忽略
+        - path: cmd/
+          linters:
+              - gocritic
+          text: "exitAfterDefer"
+
+    exclude:
+        # 屏蔽 deprecated 字段警告（按需）
+        - "SA1019:"
