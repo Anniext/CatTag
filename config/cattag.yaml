@@ -1,0 +1,58 @@
+# CatTag 蓝牙通信库配置文件
+# 这是一个示例配置文件，展示了所有可用的配置选项
+
+# 全局配置
+log_level: "info" # 日志级别: debug, info, warn, error
+
+# 服务端配置
+server:
+  service_uuid: "12345678-1234-1234-1234-123456789abc" # 蓝牙服务 UUID
+  service_name: "CatTag Service" # 蓝牙服务名称
+  max_connections: 10 # 最大并发连接数
+  accept_timeout: "30s" # 接受连接超时时间
+  require_auth: true # 是否需要身份验证
+
+# 客户端配置
+client:
+  target_device: "" # 目标设备地址或名称（空表示扫描所有）
+  scan_timeout: "10s" # 设备扫描超时时间
+  connect_timeout: "15s" # 连接超时时间
+  retry_attempts: 3 # 连接重试次数
+  retry_interval: "2s" # 重试间隔时间
+  auto_reconnect: true # 是否自动重连
+
+# 扫描配置
+scan:
+  duration: "10s" # 扫描持续时间
+  show_rssi: true # 显示信号强度
+  filter_name: "" # 按设备名称过滤
+  filter_service: "" # 按服务 UUID 过滤
+  continuous: false # 持续扫描模式
+
+# 安全配置
+security:
+  key_size: 32 # 密钥大小（字节）
+  session_timeout: "1h" # 会话超时时间
+  max_auth_attempts: 3 # 最大认证尝试次数
+  auth_timeout: "30s" # 认证超时时间
+
+# 健康检查配置
+health:
+  check_interval: "30s" # 健康检查间隔
+  heartbeat_interval: "10s" # 心跳间隔
+  connection_timeout: "5s" # 连接超时检查
+  max_failures: 3 # 最大失败次数
+
+# 连接池配置
+pool:
+  max_connections: 20 # 连接池最大连接数
+  min_connections: 2 # 连接池最小连接数
+  idle_timeout: "5m" # 空闲连接超时
+  cleanup_interval: "1m" # 清理间隔
+
+# 消息配置
+message:
+  max_size: 1048576 # 最大消息大小（1MB）
+  compression_threshold: 1024 # 压缩阈值（1KB）
+  encryption_enabled: true # 是否启用加密
+  ttl_default: "30s" # 默认消息生存时间

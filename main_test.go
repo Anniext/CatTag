@@ -1,9 +1,11 @@
 package main
 
 import (
+	"os"
 	"testing"
 	"time"
 
+	"github.com/Anniext/CatTag/cmd"
 	"github.com/Anniext/CatTag/pkg/bluetooth"
 )
 
@@ -278,5 +280,83 @@ func TestComponentBuilder(t *testing.T) {
 	// 测试配置验证
 	if err := builder.Validate(); err != nil {
 		t.Errorf("构建器配置验证失败: %v", err)
+	}
+}
+
+// TestCobraCommands 测试 Cobra 命令结构
+func TestCobraCommands(t *testing.T) {
+	// 测试根命令是否正确初始化
+	rootCmd := cmd.GetRootCommand()
+	if rootCmd == nil {
+		t.Error("根命令不应该为 nil")
+	}
+
+	// 检查命令名称
+	if rootCmd.Use != "cattag" {
+		t.Errorf("根命令名称不匹配，期望: cattag, 实际: %s", rootCmd.Use)
+	}
+
+	// 检查是否有子命令
+	subCommands := rootCmd.Commands()
+	expectedCommands := []string{"server", "client", "both", "scan", "version"}
+
+	if len(subCommands) < len(expectedCommands) {
+		t.Errorf("子命令数量不足，期望至少: %d, 实际: %d", len(expectedCommands), len(subCommands))
+	}
+
+	// 检查特定子命令是否存在
+	commandMap := make(map[string]bool)
+	for _, cmd := range subCommands {
+		commandMap[cmd.Use] = true
+	}
+
+	for _, expectedCmd := range expectedCommands {
+		if !commandMap[expectedCmd] {
+			t.Errorf("缺少子命令: %s", expectedCmd)
+		}
+	}
+}
+
+// TestCommandLineArgs 测试命令行参数解析
+func TestCommandLineArgs(t *testing.T) {
+	// 保存原始命令行参数
+	originalArgs := os.Args
+
+	// 测试版本命令
+	os.Args = []string{"cattag", "version"}
+	// 这里不能直接调用 Execute()，因为它会退出程序
+	// 在实际测试中，可能需要使用更复杂的测试策略
+
+	// 恢复原始参数
+	os.Args = originalArgs
+}
+
+// TestCobraConfigValidation 测试 Cobra 命令的配置验证
+func TestCobraConfigValidation(t *testing.T) {
+	// 测试有效配置
+	validConfig := bluetooth.DefaultConfig()
+	if err := validConfig.Validate(); err != nil {
+		t.Errorf("有效配置验证失败: %v", err)
+	}
+
+	// 测试无效的服务端配置
+	invalidServerConfig := bluetooth.DefaultConfig()
+	invalidServerConfig.ServerConfig.MaxConnections = 0
+	if err := invalidServerConfig.Validate(); err == nil {
+		t.Error("应该检测到无效的服务端最大连接数")
+	}
+
+	// 测试无效的客户端配置
+	invalidClientConfig := bluetooth.DefaultConfig()
+	invalidClientConfig.ClientConfig.ScanTimeout = 0
+	if err := invalidClientConfig.Validate(); err == nil {
+		t.Error("应该检测到无效的客户端扫描超时时间")
+	}
+
+	// 测试无效的安全配置
+	invalidSecurityConfig := bluetooth.DefaultConfig()
+	invalidSecurityConfig.SecurityConfig.KeySize = 0
+	if err := invalidSecurityConfig.Validate(); err == nil {
+		t.Error("应该检测到无效的密钥大小")
 	}
 }
