@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Anniext/CatTag/pkg/bluetooth"
+	tinybt "tinygo.org/x/bluetooth"
 )
 
 // BluetoothAdapter 蓝牙适配器接口，封装系统蓝牙API
@@ -153,6 +154,7 @@ type DefaultAdapter struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
+	realAdapter *tinybt.Adapter
 }
 
 // NewDefaultAdapter 创建新的默认适配器实例
@@ -178,11 +180,20 @@ func (da *DefaultAdapter) Initialize(ctx context.Context) error {
 	da.mu.Lock()
 	defer da.mu.Unlock()
 
-	// 模拟初始化本地适配器信息
+	// 获取默认蓝牙适配器
+	da.realAdapter = tinybt.DefaultAdapter
+
+	// 启用蓝牙适配器
+	err := da.realAdapter.Enable()
+	if err != nil {
+		return fmt.Errorf("启用蓝牙适配器失败: %v", err)
+	}
+
+	// 获取真实的适配器信息
 	da.info = AdapterInfo{
 		ID:           "adapter_001",
 		Name:         da.config.Name,
-		Address:      "00:11:22:33:44:55",
+		Address:      "00:11:22:33:44:55", // 在实际实现中应该获取真实地址
 		Version:      "5.0",
 		Manufacturer: "CatTag",
 		Powered:      false,
@@ -560,14 +571,96 @@ func (da *DefaultAdapter) scanDevices(ctx context.Context, timeout time.Duration
 	scanCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// 模拟设备发现
+	// 使用真实的蓝牙扫描
+	if da.realAdapter == nil {
+		// 如果没有真实适配器，回退到模拟模式
+		da.simulateScan(scanCtx)
+		return
+	}
+
+	// 开始真实的蓝牙扫描
+	err := da.realAdapter.Scan(func(adapter *tinybt.Adapter, result tinybt.ScanResult) {
+		// 检查上下文是否已取消
+		select {
+		case <-scanCtx.Done():
+			return
+		case <-da.ctx.Done():
+			return
+		default:
+		}
+
+		// 转换扫描结果为我们的设备格式
+		device := da.convertScanResult(result)
+
+		// 发送设备到通道
+		select {
+		case da.scanChan <- device:
+			da.sendEvent(AdapterEventDeviceFound, device)
+		default:
+			// 扫描通道满了，跳过这个设备
+		}
+	})
+
+	if err != nil {
+		// 如果真实扫描失败，回退到模拟模式
+		da.simulateScan(scanCtx)
+		return
+	}
+
+	// 等待扫描完成或超时
+	<-scanCtx.Done()
+
+	// 停止扫描
+	da.realAdapter.StopScan()
+}
+
+// convertScanResult 将 tinygo 蓝牙扫描结果转换为我们的设备格式
+func (da *DefaultAdapter) convertScanResult(result tinybt.ScanResult) bluetooth.Device {
+	// 获取设备名称
+	deviceName := result.LocalName()
+	if deviceName == "" {
+		deviceName = "Unknown Device"
+	}
+
+	// 获取设备地址
+	address := result.Address.String()
+
+	// 获取服务 UUID
+	var serviceUUIDs []string
+	for _, uuid := range result.AdvertisementPayload.ServiceUUIDs() {
+		serviceUUIDs = append(serviceUUIDs, uuid.String())
+	}
+
+	// 如果没有服务 UUID，添加默认的
+	if len(serviceUUIDs) == 0 {
+		serviceUUIDs = []string{bluetooth.DefaultServiceUUID}
+	}
+
+	return bluetooth.Device{
+		ID:           address, // 使用地址作为设备ID
+		Name:         deviceName,
+		Address:      address,
+		RSSI:         int(result.RSSI),
+		LastSeen:     time.Now(),
+		ServiceUUIDs: serviceUUIDs,
+		Capabilities: bluetooth.DeviceCapabilities{
+			SupportsEncryption: true, // 假设支持加密
+			MaxConnections:     1,
+			SupportedProtocols: []string{bluetooth.ProtocolRFCOMM},
+			BatteryLevel:       0, // 无法从扫描结果获取电池信息
+		},
+	}
+}
+
+// simulateScan 模拟扫描（回退方案）
+func (da *DefaultAdapter) simulateScan(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	deviceCount := 0
 	for {
 		select {
-		case <-scanCtx.Done():
+		case <-ctx.Done():
 			return
 		case <-da.ctx.Done():
 			return

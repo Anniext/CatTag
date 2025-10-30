@@ -9,6 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+
+	"github.com/Anniext/CatTag/internal/adapter"
+	"github.com/Anniext/CatTag/pkg/bluetooth"
 )
 
 // scanCmd 代表设备扫描命令
@@ -94,71 +97,111 @@ func startDeviceScan(ctx context.Context, showRSSI bool, filterName, filterServi
 	fmt.Println("按 Ctrl+C 停止扫描")
 	fmt.Println(strings.Repeat("-", 60))
 
-	// TODO: 实现实际的蓝牙设备扫描逻辑
+	// 实现实际的蓝牙设备扫描逻辑
 	// 1. 创建蓝牙适配器
-	// 2. 开始扫描
-	// 3. 处理发现的设备
-	// 4. 应用过滤条件
+	adapterFactory := adapter.NewDefaultAdapterFactory()
+	bluetoothAdapter, err := adapterFactory.GetDefaultAdapter()
+	if err != nil {
+		return fmt.Errorf("创建蓝牙适配器失败: %v", err)
+	}
 
-	// 模拟设备扫描
-	devices := []mockDevice{
-		{
-			Name:     "CatTag Device 1",
-			Address:  "AA:BB:CC:DD:EE:01",
-			RSSI:     -45,
-			Services: []string{"12345678-1234-1234-1234-123456789abc"},
-		},
-		{
-			Name:     "CatTag Device 2",
-			Address:  "AA:BB:CC:DD:EE:02",
-			RSSI:     -67,
-			Services: []string{"87654321-4321-4321-4321-cba987654321"},
-		},
-		{
-			Name:     "Unknown Device",
-			Address:  "AA:BB:CC:DD:EE:03",
-			RSSI:     -89,
-			Services: []string{},
-		},
+	// 2. 初始化适配器
+	if err := bluetoothAdapter.Initialize(ctx); err != nil {
+		return fmt.Errorf("初始化蓝牙适配器失败: %v", err)
+	}
+	defer bluetoothAdapter.Shutdown(ctx)
+
+	// 3. 启用蓝牙适配器
+	if !bluetoothAdapter.IsEnabled() {
+		if err := bluetoothAdapter.Enable(ctx); err != nil {
+			return fmt.Errorf("启用蓝牙适配器失败: %v", err)
+		}
+	}
+
+	// 4. 创建设备过滤器
+	filter := bluetooth.DeviceFilter{
+		NamePattern:  filterName,
+		ServiceUUIDs: []string{},
+		MinRSSI:      -100, // 默认最小信号强度
+		RequireAuth:  false,
+		DeviceTypes:  []string{},
+		MaxAge:       5 * time.Minute,
+	}
+
+	// 如果指定了服务过滤，添加到过滤器中
+	if filterService != "" {
+		filter.ServiceUUIDs = []string{filterService}
 	}
 
 	deviceCount := 0
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	scannedDevices := make(map[string]bool) // 用于去重
 
+	// 5. 开始扫描循环
 	for {
 		select {
 		case <-ctx.Done():
 			fmt.Printf("\n扫描完成，共发现 %d 个设备\n", deviceCount)
 			return ctx.Err()
-		case <-ticker.C:
-			// 模拟发现设备
-			for _, device := range devices {
-				if shouldShowDevice(device, filterName, filterService) {
-					displayDevice(device, showRSSI)
-					deviceCount++
+		default:
+			// 执行一次扫描
+			scanTimeout := 5 * time.Second
+			if continuous {
+				scanTimeout = 2 * time.Second // 持续模式使用较短的扫描间隔
+			}
+
+			deviceChan, err := bluetoothAdapter.Scan(ctx, scanTimeout)
+			if err != nil {
+				log.Printf("扫描设备失败: %v", err)
+				if !continuous {
+					return fmt.Errorf("扫描设备失败: %v", err)
+				}
+				// 持续模式下，等待一段时间后重试
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			// 6. 处理发现的设备
+			scanComplete := false
+			for !scanComplete {
+				select {
+				case <-ctx.Done():
+					fmt.Printf("\n扫描完成，共发现 %d 个设备\n", deviceCount)
+					return ctx.Err()
+				case device, ok := <-deviceChan:
+					if !ok {
+						scanComplete = true
+						break
+					}
+
+					// 应用过滤条件并去重
+					if shouldShowBluetoothDevice(device, filterName, filterService) {
+						// 使用设备地址作为唯一标识进行去重
+						if !scannedDevices[device.Address] {
+							displayBluetoothDevice(device, showRSSI)
+							scannedDevices[device.Address] = true
+							deviceCount++
+						}
+					}
 				}
 			}
 
+			// 停止当前扫描
+			bluetoothAdapter.StopScan()
+
 			if !continuous {
-				// 非持续模式下，显示一轮后退出
+				// 非持续模式下，扫描一轮后退出
 				fmt.Printf("\n扫描完成，共发现 %d 个设备\n", deviceCount)
 				return nil
 			}
+
+			// 持续模式下，等待一段时间后继续下一轮扫描
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
-// mockDevice 模拟设备结构
-type mockDevice struct {
-	Name     string
-	Address  string
-	RSSI     int
-	Services []string
-}
-
-// shouldShowDevice 检查是否应该显示设备
-func shouldShowDevice(device mockDevice, filterName, filterService string) bool {
+// shouldShowBluetoothDevice 检查是否应该显示蓝牙设备
+func shouldShowBluetoothDevice(device bluetooth.Device, filterName, filterService string) bool {
 	// 名称过滤
 	if filterName != "" && !strings.Contains(strings.ToLower(device.Name), strings.ToLower(filterName)) {
 		return false
@@ -167,7 +210,7 @@ func shouldShowDevice(device mockDevice, filterName, filterService string) bool 
 	// 服务过滤
 	if filterService != "" {
 		found := false
-		for _, service := range device.Services {
+		for _, service := range device.ServiceUUIDs {
 			if strings.Contains(strings.ToLower(service), strings.ToLower(filterService)) {
 				found = true
 				break
@@ -181,20 +224,36 @@ func shouldShowDevice(device mockDevice, filterName, filterService string) bool 
 	return true
 }
 
-// displayDevice 显示设备信息
-func displayDevice(device mockDevice, showRSSI bool) {
+// displayBluetoothDevice 显示蓝牙设备信息
+func displayBluetoothDevice(device bluetooth.Device, showRSSI bool) {
 	fmt.Printf("发现设备: %s\n", device.Name)
+	fmt.Printf("  设备ID: %s\n", device.ID)
 	fmt.Printf("  地址: %s\n", device.Address)
 
 	if showRSSI {
 		fmt.Printf("  信号强度: %d dBm\n", device.RSSI)
 	}
 
-	if len(device.Services) > 0 {
-		fmt.Printf("  服务:\n")
-		for _, service := range device.Services {
+	fmt.Printf("  最后发现: %s\n", device.LastSeen.Format("2006-01-02 15:04:05"))
+
+	if len(device.ServiceUUIDs) > 0 {
+		fmt.Printf("  服务UUID:\n")
+		for _, service := range device.ServiceUUIDs {
 			fmt.Printf("    - %s\n", service)
 		}
+	}
+
+	// 显示设备能力信息
+	if device.Capabilities.SupportsEncryption {
+		fmt.Printf("  支持加密: 是\n")
+	}
+
+	if device.Capabilities.BatteryLevel > 0 {
+		fmt.Printf("  电池电量: %d%%\n", device.Capabilities.BatteryLevel)
+	}
+
+	if len(device.Capabilities.SupportedProtocols) > 0 {
+		fmt.Printf("  支持协议: %s\n", strings.Join(device.Capabilities.SupportedProtocols, ", "))
 	}
 
 	fmt.Println()

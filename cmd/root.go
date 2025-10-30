@@ -40,7 +40,6 @@ var rootCmd = &cobra.Command{
 }
 
 // Execute 添加所有子命令到根命令并设置标志
-// 这由 main.main() 调用，只需要在 rootCmd 上调用一次
 func Execute() {
 	err := rootCmd.Execute()
 	if err != nil {
@@ -74,7 +73,7 @@ func initConfig() {
 		viper.AddConfigPath(".")
 		viper.AddConfigPath("./config")
 		viper.SetConfigType("yaml")
-		viper.SetConfigName(".cattag")
+		viper.SetConfigName("cattag")
 	}
 
 	// 读取环境变量
