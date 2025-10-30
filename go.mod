@@ -5,6 +5,7 @@ go 1.25.1
 require (
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/viper v1.21.0
+	tinygo.org/x/bluetooth v0.13.0
 )
 
 require (
@@ -30,5 +31,4 @@ require (
 	golang.org/x/exp v0.0.0-20241204233417-43b7b7cde48d // indirect
 	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
-	tinygo.org/x/bluetooth v0.13.0 // indirect
 )

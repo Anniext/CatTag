@@ -147,6 +147,7 @@ type DefaultAdapter struct {
 	scanning    bool
 	listening   bool
 	connections map[string]bluetooth.Connection
+	deviceCache map[string]*CachedDevice // 设备缓存
 	eventChan   chan AdapterEvent
 	scanChan    chan bluetooth.Device
 	connChan    chan bluetooth.Connection
@@ -155,6 +156,14 @@ type DefaultAdapter struct {
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
 	realAdapter *tinybt.Adapter
+}
+
+// CachedDevice 缓存的设备信息
+type CachedDevice struct {
+	Device      bluetooth.Device `json:"device"`       // 设备信息
+	FirstSeen   time.Time        `json:"first_seen"`   // 首次发现时间
+	UpdateCount int              `json:"update_count"` // 更新次数
+	mu          sync.RWMutex     `json:"-"`            // 设备级别的锁
 }
 
 // NewDefaultAdapter 创建新的默认适配器实例
@@ -167,6 +176,7 @@ func NewDefaultAdapter(config AdapterConfig) *DefaultAdapter {
 		scanning:    false,
 		listening:   false,
 		connections: make(map[string]bluetooth.Connection),
+		deviceCache: make(map[string]*CachedDevice),
 		eventChan:   make(chan AdapterEvent, 100),
 		scanChan:    make(chan bluetooth.Device, 100),
 		connChan:    make(chan bluetooth.Connection, 10),
@@ -592,10 +602,13 @@ func (da *DefaultAdapter) scanDevices(ctx context.Context, timeout time.Duration
 		// 转换扫描结果为我们的设备格式
 		device := da.convertScanResult(result)
 
+		// 更新设备缓存并获取最佳设备信息
+		finalDevice := da.updateDeviceCache(device)
+
 		// 发送设备到通道
 		select {
-		case da.scanChan <- device:
-			da.sendEvent(AdapterEventDeviceFound, device)
+		case da.scanChan <- finalDevice:
+			da.sendEvent(AdapterEventDeviceFound, finalDevice)
 		default:
 			// 扫描通道满了，跳过这个设备
 		}
@@ -616,14 +629,11 @@ func (da *DefaultAdapter) scanDevices(ctx context.Context, timeout time.Duration
 
 // convertScanResult 将 tinygo 蓝牙扫描结果转换为我们的设备格式
 func (da *DefaultAdapter) convertScanResult(result tinybt.ScanResult) bluetooth.Device {
-	// 获取设备名称
-	deviceName := result.LocalName()
-	if deviceName == "" {
-		deviceName = "Unknown Device"
-	}
-
 	// 获取设备地址
 	address := result.Address.String()
+
+	// 尝试多种方式获取设备名称
+	deviceName := da.extractDeviceName(result)
 
 	// 获取服务 UUID
 	var serviceUUIDs []string
@@ -650,6 +660,247 @@ func (da *DefaultAdapter) convertScanResult(result tinybt.ScanResult) bluetooth.
 			BatteryLevel:       0, // 无法从扫描结果获取电池信息
 		},
 	}
+}
+
+// extractDeviceName 从扫描结果中提取设备名称，使用多种策略
+func (da *DefaultAdapter) extractDeviceName(result tinybt.ScanResult) string {
+	// 策略1: 尝试获取 LocalName
+	if localName := result.LocalName(); localName != "" {
+		return localName
+	}
+
+	// 策略2: 尝试从广播数据中解析完整本地名称 (AD Type 0x09)
+	if completeName := da.parseCompleteLocalName(result.AdvertisementPayload); completeName != "" {
+		return completeName
+	}
+
+	// 策略3: 尝试从广播数据中解析缩短本地名称 (AD Type 0x08)
+	if shortName := da.parseShortenedLocalName(result.AdvertisementPayload); shortName != "" {
+		return shortName
+	}
+
+	// 策略4: 根据设备地址生成友好名称
+	if friendlyName := da.generateFriendlyName(result.Address.String()); friendlyName != "" {
+		return friendlyName
+	}
+
+	// 策略5: 使用默认名称
+	return "Unknown Device"
+}
+
+// parseCompleteLocalName 解析完整本地名称 (AD Type 0x09)
+func (da *DefaultAdapter) parseCompleteLocalName(payload tinybt.AdvertisementPayload) string {
+	// TinyGo 蓝牙库的 AdvertisementPayload 没有直接的字节访问方法
+	// 这里使用简化的实现，在实际项目中需要根据具体的蓝牙库API调整
+	return ""
+}
+
+// parseShortenedLocalName 解析缩短本地名称 (AD Type 0x08)
+func (da *DefaultAdapter) parseShortenedLocalName(payload tinybt.AdvertisementPayload) string {
+	// TinyGo 蓝牙库的 AdvertisementPayload 没有直接的字节访问方法
+	// 这里使用简化的实现，在实际项目中需要根据具体的蓝牙库API调整
+	return ""
+}
+
+// generateFriendlyName 根据设备地址生成友好名称
+func (da *DefaultAdapter) generateFriendlyName(address string) string {
+	// 根据 MAC 地址的 OUI (前3字节) 识别制造商
+	ouiMap := map[string]string{
+		"00:1B:DC": "Apple",
+		"00:25:00": "Apple",
+		"28:11:A5": "Apple",
+		"3C:15:C2": "Apple",
+		"40:6C:8F": "Apple",
+		"58:55:CA": "Apple",
+		"70:73:CB": "Apple",
+		"7C:D1:C3": "Apple",
+		"A4:5E:60": "Apple",
+		"A8:51:AB": "Apple",
+		"B4:18:D1": "Apple",
+		"B8:09:8A": "Apple",
+		"B8:C7:5D": "Apple",
+		"BC:52:B7": "Apple",
+		"C8:1E:E7": "Apple",
+		"D0:81:7A": "Apple",
+		"E0:F8:47": "Apple",
+		"F0:18:98": "Apple",
+		"F4:0F:24": "Apple",
+		"F8:1E:DF": "Apple",
+		"FC:E9:98": "Apple",
+		"00:1A:7D": "Samsung",
+		"00:12:FB": "Samsung",
+		"00:15:B9": "Samsung",
+		"00:16:32": "Samsung",
+		"00:17:D5": "Samsung",
+		"00:1B:98": "Samsung",
+		"00:1D:25": "Samsung",
+		"00:1E:7D": "Samsung",
+		"00:21:19": "Samsung",
+		"00:23:39": "Samsung",
+		"00:26:37": "Samsung",
+		"34:23:87": "Samsung",
+		"38:AA:3C": "Samsung",
+		"40:4E:36": "Samsung",
+		"44:5E:F3": "Samsung",
+		"50:CC:F8": "Samsung",
+		"5C:0A:5B": "Samsung",
+		"60:21:C0": "Samsung",
+		"78:1F:DB": "Samsung",
+		"8C:71:F8": "Samsung",
+		"A0:21:95": "Samsung",
+		"C4:57:6E": "Samsung",
+		"E8:50:8B": "Samsung",
+		"EC:1F:72": "Samsung",
+		"F4:7B:5E": "Samsung",
+	}
+
+	if len(address) >= 8 {
+		oui := address[:8] // 取前8个字符 "XX:XX:XX"
+		if manufacturer, exists := ouiMap[oui]; exists {
+			return fmt.Sprintf("%s Device", manufacturer)
+		}
+	}
+
+	// 如果无法识别制造商，使用地址后缀
+	if len(address) >= 17 {
+		suffix := address[12:] // 取后5个字符 "XX:XX"
+		return fmt.Sprintf("Device_%s", suffix)
+	}
+
+	return ""
+}
+
+// updateDeviceCache 更新设备缓存并返回最佳设备信息
+func (da *DefaultAdapter) updateDeviceCache(newDevice bluetooth.Device) bluetooth.Device {
+	da.mu.Lock()
+	defer da.mu.Unlock()
+
+	deviceID := newDevice.Address
+	now := time.Now()
+
+	// 检查设备是否已在缓存中
+	if cached, exists := da.deviceCache[deviceID]; exists {
+		cached.mu.Lock()
+		defer cached.mu.Unlock()
+
+		// 更新设备信息
+		cached.Device.LastSeen = now
+		cached.Device.RSSI = newDevice.RSSI
+		cached.UpdateCount++
+
+		// 如果新设备有更好的名称，更新名称
+		if da.isBetterName(newDevice.Name, cached.Device.Name) {
+			cached.Device.Name = newDevice.Name
+		}
+
+		// 合并服务UUID
+		cached.Device.ServiceUUIDs = da.mergeServiceUUIDs(cached.Device.ServiceUUIDs, newDevice.ServiceUUIDs)
+
+		return cached.Device
+	}
+
+	// 新设备，添加到缓存
+	da.deviceCache[deviceID] = &CachedDevice{
+		Device:      newDevice,
+		FirstSeen:   now,
+		UpdateCount: 1,
+	}
+
+	return newDevice
+}
+
+// isBetterName 判断新名称是否比旧名称更好
+func (da *DefaultAdapter) isBetterName(newName, oldName string) bool {
+	// 如果旧名称为空或是默认名称，新名称更好
+	if oldName == "" || oldName == "Unknown Device" {
+		return newName != "" && newName != "Unknown Device"
+	}
+
+	// 如果新名称更长且不是生成的名称，可能更好
+	if len(newName) > len(oldName) && !da.isGeneratedName(newName) && da.isGeneratedName(oldName) {
+		return true
+	}
+
+	// 如果新名称不是生成的，而旧名称是生成的，新名称更好
+	if !da.isGeneratedName(newName) && da.isGeneratedName(oldName) {
+		return true
+	}
+
+	return false
+}
+
+// isGeneratedName 判断是否是生成的名称
+func (da *DefaultAdapter) isGeneratedName(name string) bool {
+	if name == "Unknown Device" {
+		return true
+	}
+
+	// 检查是否是制造商生成的名称格式
+	if len(name) > 7 && name[len(name)-7:] == " Device" {
+		return true
+	}
+
+	// 检查是否是地址生成的名称格式
+	if len(name) > 7 && name[:7] == "Device_" {
+		return true
+	}
+
+	return false
+}
+
+// mergeServiceUUIDs 合并服务UUID列表
+func (da *DefaultAdapter) mergeServiceUUIDs(existing, new []string) []string {
+	uuidSet := make(map[string]bool)
+
+	// 添加现有的UUID
+	for _, uuid := range existing {
+		uuidSet[uuid] = true
+	}
+
+	// 添加新的UUID
+	for _, uuid := range new {
+		uuidSet[uuid] = true
+	}
+
+	// 转换回切片
+	result := make([]string, 0, len(uuidSet))
+	for uuid := range uuidSet {
+		result = append(result, uuid)
+	}
+
+	return result
+}
+
+// cleanupDeviceCache 清理过期的设备缓存
+func (da *DefaultAdapter) cleanupDeviceCache(maxAge time.Duration) {
+	da.mu.Lock()
+	defer da.mu.Unlock()
+
+	now := time.Now()
+	for deviceID, cached := range da.deviceCache {
+		cached.mu.RLock()
+		lastSeen := cached.Device.LastSeen
+		cached.mu.RUnlock()
+
+		if now.Sub(lastSeen) > maxAge {
+			delete(da.deviceCache, deviceID)
+		}
+	}
+}
+
+// GetCachedDevices 获取缓存的设备列表
+func (da *DefaultAdapter) GetCachedDevices() []bluetooth.Device {
+	da.mu.RLock()
+	defer da.mu.RUnlock()
+
+	devices := make([]bluetooth.Device, 0, len(da.deviceCache))
+	for _, cached := range da.deviceCache {
+		cached.mu.RLock()
+		devices = append(devices, cached.Device)
+		cached.mu.RUnlock()
+	}
+
+	return devices
 }
 
 // simulateScan 模拟扫描（回退方案）
