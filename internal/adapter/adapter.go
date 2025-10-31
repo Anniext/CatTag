@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -62,7 +63,7 @@ type AdapterInfo struct {
 type AdapterEvent struct {
 	Type      AdapterEventType `json:"type"`       // 事件类型
 	AdapterID string           `json:"adapter_id"` // 适配器ID
-	Data      interface{}      `json:"data"`       // 事件数据
+	Data      any              `json:"data"`       // 事件数据
 	Timestamp time.Time        `json:"timestamp"`  // 事件时间戳
 }
 
@@ -141,21 +142,21 @@ func DefaultAdapterConfig() AdapterConfig {
 
 // DefaultAdapter 默认蓝牙适配器实现
 type DefaultAdapter struct {
-	config      AdapterConfig
-	info        AdapterInfo
-	enabled     bool
-	scanning    bool
-	listening   bool
-	connections map[string]bluetooth.Connection
-	deviceCache map[string]*CachedDevice // 设备缓存
-	eventChan   chan AdapterEvent
-	scanChan    chan bluetooth.Device
-	connChan    chan bluetooth.Connection
-	mu          sync.RWMutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
-	realAdapter *tinybt.Adapter
+	config      AdapterConfig                   // 适配器配置
+	info        AdapterInfo                     // 适配器信息
+	enabled     bool                            // 是否启用
+	scanning    bool                            // 是否正在扫描
+	listening   bool                            // 是否正在监听连接
+	connections map[string]bluetooth.Connection // 活动连接
+	deviceCache map[string]*CachedDevice        // 设备缓存
+	eventChan   chan AdapterEvent               // 适配器事件通道
+	scanChan    chan bluetooth.Device           // 扫描设备通道
+	connChan    chan bluetooth.Connection       // 连接请求通道
+	mu          sync.RWMutex                    // 适配器级别的锁
+	ctx         context.Context                 // 适配器上下文
+	cancel      context.CancelFunc              // 取消函数
+	wg          sync.WaitGroup                  // 等待组
+	realAdapter *tinybt.Adapter                 // 真实的蓝牙适配器
 }
 
 // CachedDevice 缓存的设备信息
@@ -163,7 +164,7 @@ type CachedDevice struct {
 	Device      bluetooth.Device `json:"device"`       // 设备信息
 	FirstSeen   time.Time        `json:"first_seen"`   // 首次发现时间
 	UpdateCount int              `json:"update_count"` // 更新次数
-	mu          sync.RWMutex     `json:"-"`            // 设备级别的锁
+	mu          sync.RWMutex     // 设备级别的锁
 }
 
 // NewDefaultAdapter 创建新的默认适配器实例
@@ -583,12 +584,10 @@ func (da *DefaultAdapter) scanDevices(ctx context.Context, timeout time.Duration
 
 	// 使用真实的蓝牙扫描
 	if da.realAdapter == nil {
-		// 如果没有真实适配器，回退到模拟模式
-		da.simulateScan(scanCtx)
+		log.Fatalln("蓝牙适配器扫描错误")
 		return
 	}
 
-	// 开始真实的蓝牙扫描
 	err := da.realAdapter.Scan(func(adapter *tinybt.Adapter, result tinybt.ScanResult) {
 		// 检查上下文是否已取消
 		select {
@@ -615,8 +614,7 @@ func (da *DefaultAdapter) scanDevices(ctx context.Context, timeout time.Duration
 	})
 
 	if err != nil {
-		// 如果真实扫描失败，回退到模拟模式
-		da.simulateScan(scanCtx)
+		log.Fatalln("蓝牙适配器扫描失败:", err)
 		return
 	}
 
@@ -629,12 +627,6 @@ func (da *DefaultAdapter) scanDevices(ctx context.Context, timeout time.Duration
 
 // convertScanResult 将 tinygo 蓝牙扫描结果转换为我们的设备格式
 func (da *DefaultAdapter) convertScanResult(result tinybt.ScanResult) bluetooth.Device {
-	// 获取设备地址
-	address := result.Address.String()
-
-	// 尝试多种方式获取设备名称
-	deviceName := da.extractDeviceName(result)
-
 	// 获取服务 UUID
 	var serviceUUIDs []string
 	for _, uuid := range result.AdvertisementPayload.ServiceUUIDs() {
@@ -647,9 +639,9 @@ func (da *DefaultAdapter) convertScanResult(result tinybt.ScanResult) bluetooth.
 	}
 
 	return bluetooth.Device{
-		ID:           address, // 使用地址作为设备ID
-		Name:         deviceName,
-		Address:      address,
+		ID:           result.Address.String(),
+		Name:         result.LocalName(),
+		Address:      result.Address.String(),
 		RSSI:         int(result.RSSI),
 		LastSeen:     time.Now(),
 		ServiceUUIDs: serviceUUIDs,
@@ -660,114 +652,6 @@ func (da *DefaultAdapter) convertScanResult(result tinybt.ScanResult) bluetooth.
 			BatteryLevel:       0, // 无法从扫描结果获取电池信息
 		},
 	}
-}
-
-// extractDeviceName 从扫描结果中提取设备名称，使用多种策略
-func (da *DefaultAdapter) extractDeviceName(result tinybt.ScanResult) string {
-	// 策略1: 尝试获取 LocalName
-	if localName := result.LocalName(); localName != "" {
-		return localName
-	}
-
-	// 策略2: 尝试从广播数据中解析完整本地名称 (AD Type 0x09)
-	if completeName := da.parseCompleteLocalName(result.AdvertisementPayload); completeName != "" {
-		return completeName
-	}
-
-	// 策略3: 尝试从广播数据中解析缩短本地名称 (AD Type 0x08)
-	if shortName := da.parseShortenedLocalName(result.AdvertisementPayload); shortName != "" {
-		return shortName
-	}
-
-	// 策略4: 根据设备地址生成友好名称
-	if friendlyName := da.generateFriendlyName(result.Address.String()); friendlyName != "" {
-		return friendlyName
-	}
-
-	// 策略5: 使用默认名称
-	return "Unknown Device"
-}
-
-// parseCompleteLocalName 解析完整本地名称 (AD Type 0x09)
-func (da *DefaultAdapter) parseCompleteLocalName(payload tinybt.AdvertisementPayload) string {
-	// TinyGo 蓝牙库的 AdvertisementPayload 没有直接的字节访问方法
-	// 这里使用简化的实现，在实际项目中需要根据具体的蓝牙库API调整
-	return ""
-}
-
-// parseShortenedLocalName 解析缩短本地名称 (AD Type 0x08)
-func (da *DefaultAdapter) parseShortenedLocalName(payload tinybt.AdvertisementPayload) string {
-	// TinyGo 蓝牙库的 AdvertisementPayload 没有直接的字节访问方法
-	// 这里使用简化的实现，在实际项目中需要根据具体的蓝牙库API调整
-	return ""
-}
-
-// generateFriendlyName 根据设备地址生成友好名称
-func (da *DefaultAdapter) generateFriendlyName(address string) string {
-	// 根据 MAC 地址的 OUI (前3字节) 识别制造商
-	ouiMap := map[string]string{
-		"00:1B:DC": "Apple",
-		"00:25:00": "Apple",
-		"28:11:A5": "Apple",
-		"3C:15:C2": "Apple",
-		"40:6C:8F": "Apple",
-		"58:55:CA": "Apple",
-		"70:73:CB": "Apple",
-		"7C:D1:C3": "Apple",
-		"A4:5E:60": "Apple",
-		"A8:51:AB": "Apple",
-		"B4:18:D1": "Apple",
-		"B8:09:8A": "Apple",
-		"B8:C7:5D": "Apple",
-		"BC:52:B7": "Apple",
-		"C8:1E:E7": "Apple",
-		"D0:81:7A": "Apple",
-		"E0:F8:47": "Apple",
-		"F0:18:98": "Apple",
-		"F4:0F:24": "Apple",
-		"F8:1E:DF": "Apple",
-		"FC:E9:98": "Apple",
-		"00:1A:7D": "Samsung",
-		"00:12:FB": "Samsung",
-		"00:15:B9": "Samsung",
-		"00:16:32": "Samsung",
-		"00:17:D5": "Samsung",
-		"00:1B:98": "Samsung",
-		"00:1D:25": "Samsung",
-		"00:1E:7D": "Samsung",
-		"00:21:19": "Samsung",
-		"00:23:39": "Samsung",
-		"00:26:37": "Samsung",
-		"34:23:87": "Samsung",
-		"38:AA:3C": "Samsung",
-		"40:4E:36": "Samsung",
-		"44:5E:F3": "Samsung",
-		"50:CC:F8": "Samsung",
-		"5C:0A:5B": "Samsung",
-		"60:21:C0": "Samsung",
-		"78:1F:DB": "Samsung",
-		"8C:71:F8": "Samsung",
-		"A0:21:95": "Samsung",
-		"C4:57:6E": "Samsung",
-		"E8:50:8B": "Samsung",
-		"EC:1F:72": "Samsung",
-		"F4:7B:5E": "Samsung",
-	}
-
-	if len(address) >= 8 {
-		oui := address[:8] // 取前8个字符 "XX:XX:XX"
-		if manufacturer, exists := ouiMap[oui]; exists {
-			return fmt.Sprintf("%s Device", manufacturer)
-		}
-	}
-
-	// 如果无法识别制造商，使用地址后缀
-	if len(address) >= 17 {
-		suffix := address[12:] // 取后5个字符 "XX:XX"
-		return fmt.Sprintf("Device_%s", suffix)
-	}
-
-	return ""
 }
 
 // updateDeviceCache 更新设备缓存并返回最佳设备信息
@@ -901,48 +785,6 @@ func (da *DefaultAdapter) GetCachedDevices() []bluetooth.Device {
 	}
 
 	return devices
-}
-
-// simulateScan 模拟扫描（回退方案）
-func (da *DefaultAdapter) simulateScan(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	deviceCount := 0
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-da.ctx.Done():
-			return
-		case <-ticker.C:
-			// 模拟发现设备
-			if deviceCount < 5 { // 最多发现5个设备
-				device := bluetooth.Device{
-					ID:           fmt.Sprintf("device_%d", deviceCount+1),
-					Name:         fmt.Sprintf("Test Device %d", deviceCount+1),
-					Address:      fmt.Sprintf("00:11:22:33:44:%02d", deviceCount+1),
-					RSSI:         -40 - (deviceCount * 10),
-					LastSeen:     time.Now(),
-					ServiceUUIDs: []string{bluetooth.DefaultServiceUUID},
-					Capabilities: bluetooth.DeviceCapabilities{
-						SupportsEncryption: true,
-						MaxConnections:     1,
-						SupportedProtocols: []string{bluetooth.ProtocolRFCOMM},
-						BatteryLevel:       80 - (deviceCount * 10),
-					},
-				}
-
-				select {
-				case da.scanChan <- device:
-					da.sendEvent(AdapterEventDeviceFound, device)
-					deviceCount++
-				default:
-					// 扫描通道满了
-				}
-			}
-		}
-	}
 }
 
 // listenForConnections 监听连接请求的goroutine

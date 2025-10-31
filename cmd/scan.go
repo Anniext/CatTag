@@ -202,6 +202,11 @@ func startDeviceScan(ctx context.Context, showRSSI bool, filterName, filterServi
 
 // shouldShowBluetoothDevice 检查是否应该显示蓝牙设备
 func shouldShowBluetoothDevice(device bluetooth.Device, filterName, filterService string) bool {
+	// 过滤掉没有名称的设备
+	if device.Name == "" {
+		return false
+	}
+
 	// 名称过滤
 	if filterName != "" && !strings.Contains(strings.ToLower(device.Name), strings.ToLower(filterName)) {
 		return false
